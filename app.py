@@ -22,12 +22,20 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 app = Flask(__name__)
-app.secret_key = "secret123"
 
-# app.py (Near the top, after db setup)
+# -------------------- CONFIGURATION --------------------
+# Use environment variables for production, fallback to defaults for local development
+app.secret_key = os.environ.get('SECRET_KEY', 'secret123')
 
-# -------------------- DATABASE SETUP (OK) --------------------
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:@localhost/smarthire'
+# -------------------- DATABASE SETUP --------------------
+# Support both Render PostgreSQL (production) and local MySQL (development)
+DATABASE_URL = os.environ.get('DATABASE_URL', 'mysql+pymysql://root:@localhost/smarthire')
+
+# Fix for Render: postgres:// -> postgresql://
+if DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -48,15 +56,15 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['SCREENING_FOLDER'] = SCREENING_FOLDER
 
 # -------------------- EMAIL CONFIGURATION --------------------
-# Email configuration (Update these with your email credentials)
+# Email configuration using environment variables (production-ready)
 # For Gmail: Use App Password (not regular password)
 # Enable 2-factor authentication and generate App Password
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
 app.config['MAIL_PORT'] = 587
 app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = 'caragutierrez.may14@gmail.com'  # ⚠️ UPDATE THIS with your email address
-app.config['MAIL_PASSWORD'] = 'hojmgyrwsajbmhre'      # ⚠️ UPDATE THIS with your Gmail App Password
-app.config['MAIL_DEFAULT_SENDER'] = 'caragutierrez.may14@gmail.com'  # ⚠️ UPDATE THIS with your email address
+app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME', 'caragutierrez.may14@gmail.com')
+app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD', 'hojmgyrwsajbmhre')
+app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_USERNAME', 'caragutierrez.may14@gmail.com')
 
 mail = Mail(app)
 
