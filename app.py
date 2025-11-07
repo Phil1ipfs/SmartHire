@@ -1,11 +1,13 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, send_from_directory, session # <-- Ensure 'session' is imported!
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
+from flask_mail import Mail, Message
 import re
 from PyPDF2 import PdfReader
 import string
+import random
 from sqlalchemy import func
 from flask import request, jsonify
 from werkzeug.utils import secure_filename
@@ -28,6 +30,7 @@ app.secret_key = "secret123"
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:@localhost/smarthire'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
+migrate = Migrate(app, db)
 
 # -------------------- FOLDER DEFINITIONS (CLEANUP) --------------------
 # Define Python Variables for the folder paths once
@@ -35,10 +38,72 @@ UPLOAD_FOLDER = 'resumes'         # Used for general applicant uploads (if appli
 SCREENING_FOLDER = 'screened_resumes' # Used for employer screening uploads (must be created)
 ALLOWED_EXTENSIONS = {'pdf'}
 
+def allowed_file(filename):
+    """Check if file extension is allowed."""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 # -------------------- FLASK CONFIGURATION --------------------
 # Apply the defined variables to the Flask config dictionary once
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['SCREENING_FOLDER'] = SCREENING_FOLDER
+
+# -------------------- EMAIL CONFIGURATION --------------------
+# Email configuration (Update these with your email credentials)
+# For Gmail: Use App Password (not regular password)
+# Enable 2-factor authentication and generate App Password
+app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = 'caragutierrez.may14@gmail.com'  # ⚠️ UPDATE THIS with your email address
+app.config['MAIL_PASSWORD'] = 'hojmgyrwsajbmhre'      # ⚠️ UPDATE THIS with your Gmail App Password
+app.config['MAIL_DEFAULT_SENDER'] = 'caragutierrez.may14@gmail.com'  # ⚠️ UPDATE THIS with your email address
+
+mail = Mail(app)
+
+# -------------------- OTP HELPER FUNCTIONS --------------------
+def generate_otp():
+    """Generate a 6-digit OTP"""
+    return ''.join([str(random.randint(0, 9)) for _ in range(6)])
+
+def send_otp_email(email, otp):
+    """Send OTP to user's email"""
+    try:
+        msg = Message(
+            subject='SmartHire - Email Verification OTP',
+            recipients=[email],
+            body=f'''
+Hello!
+
+Thank you for signing up with SmartHire!
+
+Your verification code is: {otp}
+
+This code will expire in 10 minutes.
+
+If you didn't request this code, please ignore this email.
+
+Best regards,
+SmartHire Team
+            ''',
+            html=f'''
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #08106E;">SmartHire - Email Verification</h2>
+                <p>Hello!</p>
+                <p>Thank you for signing up with SmartHire!</p>
+                <div style="background-color: #f0f0f0; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px;">
+                    <h1 style="color: #08106E; font-size: 32px; letter-spacing: 5px; margin: 0;">{otp}</h1>
+                </div>
+                <p>This code will expire in <strong>10 minutes</strong>.</p>
+                <p>If you didn't request this code, please ignore this email.</p>
+                <p style="margin-top: 30px;">Best regards,<br>SmartHire Team</p>
+            </div>
+            '''
+        )
+        mail.send(msg)
+        return True
+    except Exception as e:
+        print(f"Error sending email: {e}")
+        return False
 
 # -------------------- DATABASE MODELS --------------------
 class User(db.Model):
@@ -90,7 +155,22 @@ class Applicant(db.Model):
     experience = db.Column(db.Integer)
     # 1. ADD INDENTATION HERE
     resume_filename = db.Column(db.String(255))
+    photo_filename = db.Column(db.String(255))
     # 2. ENSURE INDENTATION IS CONSISTENT HERE
+    
+    @property
+    def photo_url(self):
+        """Generate URL for profile photo"""
+        from flask import url_for
+        if self.photo_filename:
+            return url_for('uploaded_file', filename=self.photo_filename)
+        return url_for('static', filename='images/man2x2.jpg')
+    
+    @property
+    def profile_image_url(self):
+        """Alias for photo_url for compatibility"""
+        return self.photo_url
+    
     def __repr__(self):
         return f"<Applicant {self.fullname}>"
 
@@ -125,31 +205,47 @@ class Employer(db.Model):
 class Resume(db.Model):
     __tablename__ = 'resume'
     id = db.Column(db.Integer, primary_key=True)
-    # 🎯 Change the name of the column to 'filename'
     filename = db.Column(db.String(255), nullable=False) 
     owner_name = db.Column(db.String(255), nullable=False)
-    uploaded_at = db.Column(db.DateTime, default=func.now()) 
+    applicant_id = db.Column(db.Integer, db.ForeignKey('applicant.user_id'), nullable=True)  # Connect to Applicant
+    uploaded_at = db.Column(db.DateTime, default=func.now())
+    
+    # Relationship to Applicant
+    applicant = db.relationship('Applicant', foreign_keys=[applicant_id], backref='resumes')
     
     def __repr__(self):
-        return f"<Resume id={self.id} owner='{self.owner_name}'>"
+        return f"<Resume id={self.id} owner='{self.owner_name}' applicant_id={self.applicant_id}>"
 
 class Screening(db.Model):
     __tablename__ = 'screening'
     id = db.Column(db.Integer, primary_key=True)
     resume_id = db.Column(db.Integer, db.ForeignKey('resume.id'), nullable=False)
     job_id = db.Column(db.Integer, db.ForeignKey('Job.id'))
+    employer_id = db.Column(db.Integer, db.ForeignKey('employer.id'), nullable=True)  # Track which employer did the screening
     
+    # Applicant Information (extracted from resume)
     applicant_name = db.Column(db.String(150))
     applicant_email = db.Column(db.String(150))
     applicant_phone = db.Column(db.String(50))
-    job_description_text = db.Column(db.Text, nullable=False)
-    matched_skills = db.Column(db.Text)
-    match_score = db.Column(db.Float)
+    
+    # Job Matching Details
+    job_description_text = db.Column(db.Text, nullable=False)  # The job description used for matching
+    matched_skills = db.Column(db.Text)  # Comma-separated list of matched skills
+    match_score = db.Column(db.Float)  # AI match score (0-100)
+    
+    # Resume Text Summary (first 500 chars for quick reference)
+    resume_text_summary = db.Column(db.Text, nullable=True)
+    
+    # Timestamps
     screened_at = db.Column(db.DateTime, default=datetime.utcnow)
     
-    # Relationships now know which columns to use
+    # Relationships
     resume = db.relationship('Resume', backref='screenings')
     job = db.relationship('Job', backref='screenings')
+    employer = db.relationship('Employer', backref='screenings')
+    
+    def __repr__(self):
+        return f"<Screening id={self.id} applicant='{self.applicant_name}' score={self.match_score}%>"
 
 # -------------------- FILE FOLDERS --------------------
 # Define the base directory of the current script (app.py)
@@ -201,25 +297,43 @@ def do_login():
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
 
+    if not username or not password:
+        flash("Please enter both username and password", "error")
+        return redirect(url_for("login"))
+
     user = User.query.filter(func.lower(User.username) == username.lower()).first()
 
-    if user and user.password == password:
-        session["user_id"] = user.id
-        session["role"] = user.role
-        print(f"✅ Logged in as: {user.username} (role={user.role})")
-
-        if user.role == "admin":
-            return redirect(url_for("admin_dashboard"))
-        elif user.role == "applicant":
-            return redirect(url_for("applicant_dashboard"))
-        elif user.role == "employer":
-            return redirect(url_for("employer_dashboard"))
+    if user:
+        # Check if password is hashed or plain text (for backward compatibility)
+        password_valid = False
+        if is_hashed(user.password):
+            # Password is hashed, use check_password_hash
+            password_valid = check_password_hash(user.password, password)
         else:
-            flash("Unknown user role. Contact admin.", "error")
-            return redirect(url_for("login"))
+            # Password is plain text (backward compatibility)
+            password_valid = (user.password == password)
+            # If login successful with plain text, hash it for future use
+            if password_valid:
+                user.password = generate_password_hash(password)
+                db.session.commit()
+        
+        if password_valid:
+            session["user_id"] = user.id
+            session["role"] = user.role
+            print(f"[SUCCESS] Logged in as: {user.username} (role={user.role})")
+
+            if user.role == "admin":
+                return redirect(url_for("admin_dashboard"))
+            elif user.role == "applicant":
+                return redirect(url_for("applicant_dashboard"))
+            elif user.role == "employer":
+                return redirect(url_for("employer_dashboard"))
+            else:
+                flash("Unknown user role. Contact admin.", "error")
+                return redirect(url_for("login"))
 
     # If we reach here, login failed
-    flash("❌ Invalid username or password", "error")
+    flash("Invalid username or password", "error")
     return redirect(url_for("login"))
 
 @app.route("/signup", methods=["GET", "POST"])
@@ -228,6 +342,7 @@ def signup():
         username = request.form["username"]
         email = request.form["email"] 
         password = request.form["password"]
+        contact = request.form.get("contact", "")
         user_role = request.form.get("role", "applicant")  # default 'applicant'
 
         # Check if username exists
@@ -236,50 +351,150 @@ def signup():
             flash("Username already exists!", "error")
             return redirect(url_for("signup"))
 
-        try:
-            # 1️⃣ Create User (plain-text password)
-            new_user = User(
-                username=username,
-                password=password,
-                role=user_role
-            )
+        # Check if email already exists
+        if user_role == "applicant":
+            existing_email = Applicant.query.filter(func.lower(Applicant.email) == email.lower()).first()
+        elif user_role == "employer":
+            existing_email = Employer.query.filter(func.lower(Employer.email) == email.lower()).first()
+        else:
+            existing_email = None
 
-            db.session.add(new_user)
-            db.session.flush()  # to get new_user.id
-
-            # 2️⃣ Create profile
-            if user_role == "applicant":
-                new_profile = Applicant(
-                    user_id=new_user.id,
-                    fullname=username,
-                    email=email,
-                    skills="N/A",
-                    experience="0 years"
-                )
-
-            elif user_role == "employer":
-                new_profile = Employer(
-                    user_id=new_user.id,
-                    fullname=username,
-                    email=email,
-                    company="N/A"
-                )
-
-            else:
-                db.session.rollback()
-                flash("Invalid role selected.", "error")
-                return redirect(url_for("signup"))
-
-            db.session.add(new_profile)
-            db.session.commit()
-            flash("Sign up successful! You can now log in.", "success")
-            return redirect(url_for("login"))
-
-        except Exception as e:
-            db.session.rollback()
-            flash(f"Error during signup: {e}", "error")
+        if existing_email:
+            flash("Email already registered!", "error")
             return redirect(url_for("signup"))
+
+        # Generate OTP
+        otp = generate_otp()
+        
+        # Store signup data and OTP in session
+        session['signup_data'] = {
+            'username': username,
+            'email': email,
+            'password': password,
+            'contact': contact,
+            'role': user_role,
+            'otp': otp,
+            'otp_expiry': (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+        }
+
+        # Send OTP email
+        if send_otp_email(email, otp):
+            flash("Verification code sent to your email! Please check your inbox.", "success")
+            return redirect(url_for("verify_otp"))
+        else:
+            flash("Failed to send verification email. Please try again.", "error")
+            return redirect(url_for("signup"))
+    
     return render_template("signup.html")
+
+@app.route("/verify-otp", methods=["GET", "POST"])
+def verify_otp():
+    # Check if signup data exists in session
+    if 'signup_data' not in session:
+        flash("Please complete the signup form first.", "error")
+        return redirect(url_for("signup"))
+
+    signup_data = session.get('signup_data')
+    
+    if request.method == "POST":
+        entered_otp = request.form.get("otp", "").strip()
+        stored_otp = signup_data.get('otp')
+        otp_expiry = datetime.fromisoformat(signup_data.get('otp_expiry'))
+
+        # Check if OTP expired
+        if datetime.utcnow() > otp_expiry:
+            session.pop('signup_data', None)
+            flash("OTP has expired. Please sign up again.", "error")
+            return redirect(url_for("signup"))
+
+        # Verify OTP
+        if entered_otp == stored_otp:
+            try:
+                # Create User account
+                username = signup_data['username']
+                email = signup_data['email']
+                password = signup_data['password']
+                contact = signup_data['contact']
+                user_role = signup_data['role']
+
+                hashed_password = generate_password_hash(password)
+                new_user = User(
+                    username=username,
+                    password=hashed_password,
+                    role=user_role
+                )
+
+                db.session.add(new_user)
+                db.session.flush()  # to get new_user.id
+
+                # Create profile
+                if user_role == "applicant":
+                    new_profile = Applicant(
+                        user_id=new_user.id,
+                        fullname=username,
+                        email=email,
+                        contact_number=contact,
+                        skills="N/A",
+                        experience="0 years"
+                    )
+                elif user_role == "employer":
+                    new_profile = Employer(
+                        user_id=new_user.id,
+                        fullname=username,
+                        email=email,
+                        phone=contact,
+                        company="N/A"
+                    )
+                else:
+                    db.session.rollback()
+                    flash("Invalid role selected.", "error")
+                    session.pop('signup_data', None)
+                    return redirect(url_for("signup"))
+
+                db.session.add(new_profile)
+                db.session.commit()
+
+                # Clear signup data from session
+                session.pop('signup_data', None)
+
+                flash("Email verified successfully! You can now log in.", "success")
+                return redirect(url_for("login"))
+
+            except Exception as e:
+                db.session.rollback()
+                flash(f"Error during signup: {e}", "error")
+                return redirect(url_for("verify_otp"))
+        else:
+            flash("Invalid verification code. Please try again.", "error")
+            return redirect(url_for("verify_otp"))
+
+    # Show OTP verification page
+    email = signup_data.get('email', '')
+    return render_template("verify_otp.html", email=email)
+
+@app.route("/resend-otp", methods=["POST"])
+def resend_otp():
+    """Resend OTP to user's email"""
+    if 'signup_data' not in session:
+        flash("Please complete the signup form first.", "error")
+        return redirect(url_for("signup"))
+
+    signup_data = session.get('signup_data')
+    email = signup_data.get('email')
+    
+    # Generate new OTP
+    otp = generate_otp()
+    signup_data['otp'] = otp
+    signup_data['otp_expiry'] = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+    session['signup_data'] = signup_data
+
+    # Send new OTP
+    if send_otp_email(email, otp):
+        flash("New verification code sent to your email!", "success")
+    else:
+        flash("Failed to send verification email. Please try again.", "error")
+    
+    return redirect(url_for("verify_otp"))
 
 @app.route("/forgot-password", methods=["GET", "POST"])
 def forgot_password():
@@ -295,7 +510,6 @@ def logout():
     return redirect(url_for("login"))
 
 # -------------------- DASHBOARDS --------------------
-from flask import session # Make sure this is imported
 @app.route("/dashboard/employer")
 def employer_dashboard():
     if 'user_id' not in session or session.get('role') != 'employer':
@@ -307,11 +521,15 @@ def employer_dashboard():
         flash("Employer profile not found.", "error")
         return redirect(url_for("login"))
 
-    # Fetches ALL jobs from the database for viewing
-    jobs_list = Job.query.order_by(Job.created_at.desc()).all()
+    # Fetches jobs posted by this employer
+    jobs_list = Job.query.filter_by(employer_id=employer.id).order_by(Job.created_at.desc()).all()
 
     resumes_list = Resume.query.all()
-    screenings_list = Screening.query.order_by(Screening.screened_at.desc()).all()
+    # Load job and employer relationships for screenings - filter by current employer
+    screenings_list = Screening.query.options(
+        joinedload(Screening.job),
+        joinedload(Screening.employer)
+    ).filter_by(employer_id=employer.id).order_by(Screening.screened_at.desc()).all()
 
     stats = {
         "uploaded_resumes": len(resumes_list),
@@ -467,40 +685,46 @@ def upload_resume():
             # 2b. Update the main Applicant profile record (KEEP)
             applicant.resume_filename = filename
 
-            # 2c. 🌟 CRITICAL FIX: INSERT RECORD INTO THE SEPARATE 'resume' TABLE 🌟
+            # 2c. 🌟 SAVE TO RESUME TABLE - Connected to Applicant 🌟
             try:
-                # IMPORTANT: Assumes you have a 'Resume' model defined for the 'resume' table
-                # Ensure the Resume model imports 'datetime' and 'func' for 'uploaded_at'
-                new_resume = Resume(
-                    # Maps to owner_name in your DB. Using the newly updated/submitted name.
-                    owner_name=applicant.fullname, 
-                    # Maps to applicant_id in your DB. Stores the unique file name.
-                    applicant_id=filename, 
-                    # Use server time
-                    uploaded_at=datetime.utcnow() 
-                )
+                # Check if resume already exists for this applicant (update instead of duplicate)
+                existing_resume = Resume.query.filter_by(applicant_id=applicant.user_id).first()
                 
-                db.session.add(new_resume)
-                # Note: The commit is done later in the main try/except block.
+                if existing_resume:
+                    # Update existing resume record
+                    existing_resume.filename = filename
+                    existing_resume.owner_name = applicant.fullname
+                    existing_resume.uploaded_at = datetime.utcnow()
+                    print(f"[OK] Updated existing resume record: ID={existing_resume.id}, Applicant ID={applicant.user_id}")
+                else:
+                    # Create new resume record - Connected to Applicant
+                    new_resume = Resume(
+                        owner_name=applicant.fullname,  # Applicant's name
+                        filename=filename,  # Resume file name
+                        applicant_id=applicant.user_id,  # 🌟 Connect to Applicant via user_id
+                        uploaded_at=datetime.utcnow()  # Upload timestamp
+                    )
+                    db.session.add(new_resume)
+                    print(f"[OK] Created new resume record: Applicant ID={applicant.user_id}, Filename={filename}")
                 
             except Exception as e:
                 # Log an error but allow profile update to continue if possible
-                print(f"Error inserting into 'resume' history table: {e}")
-                flash("🚫 Resume history could not be saved, but profile was updated.", "warning")
+                print(f"[ERROR] Error saving to 'resume' table: {e}")
+                flash("Resume could not be saved to database, but file was uploaded.", "warning")
 
 
         elif file.filename != '' and not allowed_file(file.filename):
-            flash("🚫 Only PDF files are allowed for resume upload.", "error")
+            flash("Only PDF files are allowed for resume upload.", "error")
             # Continue to save text fields even if file fails
     
     # 3. Save all changes (profile fields and new resume record) (KEEP)
     try:
         # This commits the Applicant profile changes AND the new Resume record
         db.session.commit()
-        flash("✅ Profile and Resume updated successfully!", "success")
+        flash("Profile and Resume updated successfully!", "success")
     except Exception as e:
         db.session.rollback()
-        flash(f"🚫 Error saving profile: {e}", "error")
+        flash(f"Error saving profile: {e}", "error")
 
     # The dashboard calculates the profile percentage based on these saved fields
     return redirect(url_for('applicant_dashboard'))
@@ -585,7 +809,7 @@ def submit_job():
 
     db.session.add(new_job)
     db.session.commit()
-    flash(f"✅ Job '{title}' added successfully!", "success")
+    flash(f"Job '{title}' added successfully!", "success")
     return redirect(url_for("employer_dashboard"))
 
 # FIX: /jobs/edit/<int:job_id>
@@ -613,7 +837,7 @@ def edit_job(job_id):
         
         db.session.commit()
         
-        flash(f"✅ Job '{job.title}' updated successfully!", "success")
+        flash(f"Job '{job.title}' updated successfully!", "success")
         return redirect(url_for("employer_dashboard"))
 
     # 4. Handle GET Request (Display Form)
@@ -638,7 +862,7 @@ def approve_job(job_id):
     job = Job.query.get_or_404(job_id)
     job.status = "Approved"
     db.session.commit()
-    flash(f"✅ Job '{job.title}' approved successfully!", "success")
+    flash(f"Job '{job.title}' approved successfully!", "success")
     return redirect(url_for("admin_dashboard"))
 
 @app.route('/archive_job/<int:job_id>', methods=['POST'])
@@ -674,27 +898,177 @@ def apply_job(job_id):
         flash(f"You have already applied for '{job.title}'. Status: {existing_application.status}", "warning")
         return redirect(url_for('applicant_dashboard'))
 
-    # 💾 Create and save the new application
+    # 💾 Create and save the new application to Application table
     try:
         new_application = Application(
-            applicant_id=applicant_user_id,
-            job_id=job_id,
-            status='Submitted', # Default status for a new application
-            created_at=datetime.utcnow()
+            applicant_id=applicant_user_id,  # Connected to Applicant
+            job_id=job_id,  # Connected to Job
+            status='Submitted',  # Default status for a new application
+            created_at=datetime.utcnow()  # Application timestamp
         )
         db.session.add(new_application)
         db.session.commit()
         
+        print(f"[OK] Application saved to database: ID={new_application.id}, Applicant ID={applicant_user_id}, Job ID={job_id}")
         # Flash message for toast/alert
-        flash(f"✅ Application for '{job.title}' submitted successfully!", "success")
+        flash(f"Application for '{job.title}' submitted successfully! Saved to Job History.", "success")
     except Exception as e:
         db.session.rollback()
-        flash(f"🚫 Error submitting application: {e}", "error")
+        print(f"[ERROR] Error saving application: {e}")
+        flash(f"Error submitting application: {e}", "error")
 
     # Redirect back to the dashboard to show the updated history/applied status
     return redirect(url_for('applicant_dashboard'))
 
 # -------------------- RESUME SCREENING --------------------
+@app.route('/screen-existing-resume', methods=['POST'])
+def screen_existing_resume():
+    """
+    Screen an existing resume from the Resume table against a job.
+    All screening details will be saved to the Screening table.
+    """
+    # 1. Authentication Check (Must be an employer)
+    if 'user_id' not in session or session.get('role') != 'employer':
+        flash("Unauthorized access. Please log in as an employer.", "error")
+        return redirect(url_for("login"))
+    
+    try:
+        # 2. Get form data
+        resume_id = request.form.get('resume_id')
+        job_id_str = request.form.get('job_id')
+        
+        # Validation
+        if not resume_id or not job_id_str:
+            flash("Please select both a resume and a job.", "error")
+            return redirect(url_for("employer_dashboard"))
+        
+        resume_id = int(resume_id)
+        job_id = int(job_id_str) if job_id_str.isdigit() else None
+        
+        if not job_id:
+            flash("Invalid job selected.", "error")
+            return redirect(url_for("employer_dashboard"))
+        
+        # 3. Get employer
+        employer = Employer.query.filter_by(user_id=session['user_id']).first()
+        if not employer:
+            flash("Employer profile not found.", "error")
+            return redirect(url_for("employer_dashboard"))
+        
+        # 4. Get Resume from Resume table
+        resume = Resume.query.get(resume_id)
+        if not resume:
+            flash("Resume not found in database.", "error")
+            return redirect(url_for("employer_dashboard"))
+        
+        # 5. Get Job
+        job = Job.query.get(job_id)
+        if not job:
+            flash("Job not found.", "error")
+            return redirect(url_for("employer_dashboard"))
+        
+        # Security: Verify the job belongs to the current employer
+        if job.employer_id != employer.id:
+            flash("Unauthorized: You can only screen resumes against your own job posts.", "error")
+            return redirect(url_for("employer_dashboard"))
+        
+        # 6. Build job description text
+        job_description_text = f"{job.title}\n\n{job.description}"
+        if job.location:
+            job_description_text += f"\n\nLocation: {job.location}"
+        if job.job_type:
+            job_description_text += f"\n\nJob Type: {job.job_type}"
+        
+        # 7. Get resume file path and extract text
+        # Check if resume is in UPLOAD_FOLDER (applicant uploads) or SCREENING_FOLDER
+        resume_filepath = None
+        if resume.filename.startswith('screen_'):
+            resume_filepath = os.path.join(SCREENING_FOLDER, resume.filename)
+        else:
+            resume_filepath = os.path.join(app.config['UPLOAD_FOLDER'], resume.filename)
+        
+        if not os.path.exists(resume_filepath):
+            flash(f"Resume file not found: {resume.filename}", "error")
+            return redirect(url_for("employer_dashboard"))
+        
+        # 8. Extract resume text
+        resume_text = extract_text_from_pdf(resume_filepath)
+        email, phone = extract_contact_info(resume_text)
+        applicant_name = extract_applicant_name(resume_text)
+        
+        # Use resume owner name if extraction fails
+        if applicant_name == "Unknown Applicant" and resume.owner_name:
+            applicant_name = resume.owner_name
+        
+        # 9. Calculate match scores
+        matched_skills, match_score = calculate_ai_match_score(resume_text, job_description_text)
+        matched_professions = extract_professions(resume_text)
+        final_matched_skills = list(set(matched_skills + matched_professions))
+        
+        # 10. Create resume summary
+        resume_summary = resume_text[:500] + "..." if len(resume_text) > 500 else resume_text
+        
+        # 11. SAVE TO SCREENING TABLE - All details saved to database
+        new_screening = Screening(
+            resume_id=resume.id,  # Connected to Resume table
+            job_id=job_id,  # Connected to Job
+            employer_id=employer.id,  # Track which employer did the screening
+            
+            # Applicant Information (extracted from resume)
+            applicant_name=applicant_name,
+            applicant_email=email,
+            applicant_phone=phone,
+            
+            # Job Matching Details
+            job_description_text=job_description_text,  # Full job description used for matching
+            matched_skills=", ".join(final_matched_skills),  # All matched skills
+            match_score=match_score,  # AI match score percentage
+            
+            # Resume Summary for quick reference
+            resume_text_summary=resume_summary,
+            
+            # Timestamp is automatically set by default=datetime.utcnow
+        )
+        db.session.add(new_screening)
+        db.session.commit()
+        
+        print(f"[OK] Screening saved to Screening table: ID={new_screening.id}, Resume ID={resume.id}, Job ID={job_id}, Score={match_score}%")
+        flash(f"Resume screened successfully! Match Score: {match_score}% (Saved to Screening table)", "success")
+        
+        # 12. Prepare data for results page
+        highlighted_resume = resume_text
+        for skill in sorted(set(final_matched_skills), key=len, reverse=True):
+            try:
+                highlighted_resume = re.sub(
+                    rf"\b({re.escape(skill)})\b",
+                    r"<mark style='background:#FFD54F;padding:0.05rem 0.15rem;border-radius:0.15rem;'>\1</mark>",
+                    highlighted_resume,
+                    flags=re.IGNORECASE
+                )
+            except re.error:
+                continue
+        
+        all_jobs = Job.query.all()
+        matched_jobs = [j for j in all_jobs if any(skill.lower() in f"{j.title} {j.company} {j.description}".lower() for skill in final_matched_skills)]
+        
+        return render_template(
+            "ai_resume_result.html",
+            applicant_name=applicant_name,
+            email=email,
+            phone=phone,
+            score=match_score,
+            matched_skills=final_matched_skills,
+            skills_count=len(SKILL_KEYWORDS) + len(PROFESSIONS),
+            highlighted_resume=highlighted_resume,
+            resume_filename=resume.filename,
+            matched_jobs=matched_jobs
+        )
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"[ERROR] Error screening existing resume: {e}")
+        flash(f"Error screening resume: {e}", "error")
+        return redirect(url_for("employer_dashboard"))
 try:
     nlp = spacy.load("en_core_web_sm")
 except OSError:
@@ -799,7 +1173,7 @@ def upload_screening():
     try:
         # 2. Get form data and file
         file = request.files.get('resume_file')
-        job_description_text = request.form.get('job_description')
+        job_description_text = request.form.get('job_description', '').strip()
         job_id_str = request.form.get('job_id') # Optional: If the user selects a job
 
         # Basic Validation
@@ -807,12 +1181,37 @@ def upload_screening():
             flash("No resume file selected!", "error")
             return redirect(url_for("employer_dashboard"))
         
-        if not job_description_text:
-            flash("Job Description text is required for screening.", "error")
-            return redirect(url_for("employer_dashboard"))
-
         # Determine the Job ID for the Screening record
         job_id = int(job_id_str) if job_id_str and job_id_str.isdigit() else None
+        
+        # Get employer to validate job ownership
+        employer = Employer.query.filter_by(user_id=session['user_id']).first()
+        if not employer:
+            flash("Employer profile not found.", "error")
+            return redirect(url_for("employer_dashboard"))
+        
+        # 🌟 NEW: If job_id is provided, automatically use that job's description
+        selected_job = None
+        if job_id:
+            selected_job = Job.query.get(job_id)
+            if selected_job:
+                # Security: Verify the job belongs to the current employer
+                if selected_job.employer_id != employer.id:
+                    flash("Unauthorized: You can only screen resumes against your own job posts.", "error")
+                    return redirect(url_for("employer_dashboard"))
+                
+                # Use the job's description, title, and other details for matching
+                # Combine title, description, and requirements for better matching
+                job_description_text = f"{selected_job.title}\n\n{selected_job.description}"
+                if selected_job.location:
+                    job_description_text += f"\n\nLocation: {selected_job.location}"
+                if selected_job.job_type:
+                    job_description_text += f"\n\nJob Type: {selected_job.job_type}"
+        
+        # Final validation: job description is required (either from form or from selected job)
+        if not job_description_text:
+            flash("Job Description is required for screening. Please select a job or paste a job description.", "error")
+            return redirect(url_for("employer_dashboard"))
         
         # 3. SAVE THE UPLOADED FILE
         filename = secure_filename(f"screen_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{file.filename}")
@@ -827,28 +1226,8 @@ def upload_screening():
         applicant_name = extract_applicant_name(resume_text)
         
         # -----------------------------------------------------------------
-        # NEW LOGIC: FIND OR CREATE A REAL APPLICANT RECORD
-        # -----------------------------------------------------------------
-        applicant = Applicant.query.filter(
-            (Applicant.name == applicant_name) | (Applicant.email == email)
-        ).first()
-
-        applicant_created = False
-        if not applicant:
-            # Create a new Applicant record with minimal data
-            # NOTE: Assuming your Applicant model has 'name', 'email', 'phone', 'password', 'role'
-            applicant = Applicant(
-                name=applicant_name,
-                email=email if email else f"temp_{datetime.utcnow().timestamp()}@smarthire.com",
-                phone=phone if phone else "N/A",
-                password=generate_password_hash("temp-password"), # Set a temporary password
-                role='applicant'
-            )
-            db.session.add(applicant)
-            db.session.flush() # Get the new applicant.id before proceeding
-            applicant_created = True
-        
-        real_applicant_id = applicant.id
+        # NOTE: For screening, we don't create Applicant records automatically
+        # The screening is done on external resumes uploaded by employers
         # -----------------------------------------------------------------
         
         # 4b. Calculate Scores
@@ -858,34 +1237,43 @@ def upload_screening():
         
         # 5. CREATE A TEMPORARY RESUME RECORD (Now linked to a REAL Applicant ID)
         new_resume = Resume(
-            applicant_id=real_applicant_id,  
             filename=filename, 
             owner_name=applicant_name
         )
         db.session.add(new_resume)
         db.session.flush() # Get the new_resume.id before commit
 
-        # 6. SAVE SCREENING RECORD
+        # 6. SAVE SCREENING RECORD - All details saved to database
+        # Create resume text summary (first 500 characters for quick reference)
+        resume_summary = resume_text[:500] + "..." if len(resume_text) > 500 else resume_text
+        
         new_screening = Screening(
             resume_id=new_resume.id,  
-            job_id=job_id, 
+            job_id=job_id,
+            employer_id=employer.id,  # Track which employer did the screening
             
+            # Applicant Information (extracted from resume)
             applicant_name=applicant_name,
             applicant_email=email,
             applicant_phone=phone,
             
-            job_description_text=job_description_text,
-            matched_skills=", ".join(final_matched_skills),
-            match_score=match_score
+            # Job Matching Details
+            job_description_text=job_description_text,  # Full job description used for matching
+            matched_skills=", ".join(final_matched_skills),  # All matched skills
+            match_score=match_score,  # AI match score percentage
+            
+            # Resume Summary for quick reference
+            resume_text_summary=resume_summary,
+            
+            # Timestamp is automatically set by default=datetime.utcnow
         )
         db.session.add(new_screening)
-        db.session.commit() # Commit Applicant, Resume, and Screening records
+        db.session.commit() # Commit Resume and Screening records to database
+        
+        print(f"[OK] Screening saved to database: ID={new_screening.id}, Applicant={applicant_name}, Score={match_score}%, Job ID={job_id}")
 
         # 7. Prepare data for the results page
-        if applicant_created:
-            flash(f"✅ Screening successful! New Applicant '{applicant_name}' and Resume record created.", "success")
-        else:
-            flash(f"✅ Screening successful! Match Score: {match_score}%", "success")
+        flash(f"Screening successful! Match Score: {match_score}%", "success")
 
 
         highlighted_resume = resume_text
@@ -923,7 +1311,7 @@ def upload_screening():
         # Optional: Delete the file if it was saved before the error
         if 'filepath' in locals() and os.path.exists(filepath):
             os.remove(filepath)
-        flash(f"❌ A critical server error occurred during screening: {e}", "error")
+        flash(f"A critical server error occurred during screening: {e}", "error")
         return redirect(url_for("employer_dashboard"))
 # Make sure your helper function also uses clean, standard indentation
 def extract_applicant_name(resume_text):
@@ -947,27 +1335,56 @@ def resume_screening_submit():
     # This route handles saving the screening result to the database after
     # the matching logic (NLP/ML) has completed.
     
-    # You will need to replace this with the actual values derived from your
-    # resume processing logic (e.g., PDF extraction, skill matching, similarity scoring).
+    # Authentication check
+    if 'user_id' not in session or session.get('role') != 'employer':
+        flash("Unauthorized access. Please log in as an employer.", "error")
+        return redirect(url_for("login"))
+    
+    employer = Employer.query.filter_by(user_id=session['user_id']).first()
+    if not employer:
+        flash("Employer profile not found.", "error")
+        return redirect(url_for("login"))
+    
     try:
-        # Example data structure you need to collect from the screening process:
+        # Get form data
         applicant_data = {
-            'name': request.form.get('applicant_name'), # Assuming you have a form field for name
+            'name': request.form.get('applicant_name', 'Unknown'),
             'email': request.form.get('applicant_email', 'N/A'),
             'phone': request.form.get('applicant_phone', 'N/A'),
             'score': float(request.form.get('match_score', 0.0)),
             'skills': request.form.get('matched_skills', 'No skills found'),
-            'job_title': request.form.get('job_title', 'General Application'),
+            'job_id': request.form.get('job_id'),
+            'resume_id': request.form.get('resume_id'),
+            'job_description': request.form.get('job_description', ''),
         }
 
-        # Create a new Screening object
+        # Get resume_id and job_id (required fields)
+        resume_id = applicant_data['resume_id']
+        job_id = applicant_data['job_id'] if applicant_data['job_id'] else None
+        
+        # If resume_id is not provided, we need to find or create one
+        if not resume_id:
+            # Try to find existing resume by owner name
+            resume = Resume.query.filter_by(owner_name=applicant_data['name']).first()
+            if not resume:
+                flash("Resume ID is required for screening.", "error")
+                return redirect(url_for('employer_dashboard'))
+            resume_id = resume.id
+        else:
+            resume_id = int(resume_id)
+
+        # Create a new Screening object with correct field names
         new_screening = Screening(
+            resume_id=resume_id,
+            job_id=int(job_id) if job_id else None,
+            employer_id=employer.id,  # Track which employer did the screening
             applicant_name=applicant_data['name'],
-            phone_no=applicant_data['phone'],
-            email=applicant_data['email'],
+            applicant_email=applicant_data['email'],
+            applicant_phone=applicant_data['phone'],
+            job_description_text=applicant_data['job_description'] or 'N/A',
             matched_skills=applicant_data['skills'],
             match_score=applicant_data['score'],
-            job_title=applicant_data['job_title']
+            resume_text_summary=None  # Can be set if available
         )
         
         # Add to session and commit to the database
@@ -981,7 +1398,7 @@ def resume_screening_submit():
 
     except Exception as e:
         db.session.rollback() 
-        flash(f"Error saving screening record: {str(e)}", 'danger')
+        flash(f"Error saving screening record: {str(e)}", 'error')
         # Redirect back to the screening page or dashboard
         return redirect(url_for('employer_dashboard'))
 # -------------------- DOWNLOAD AND DELETE ROUTES --------------------
@@ -1003,7 +1420,7 @@ def delete_screening(screening_id):
     if screening_record:
         db.session.delete(screening_record)
         db.session.commit()
-        flash("✅ Screening record deleted!", "success")
+        flash("Screening record deleted!", "success")
     else:
         flash("Screening record not found.", "error")
     return redirect(url_for("employer_dashboard"))
@@ -1041,7 +1458,7 @@ def edit_applicant(applicant_id):
         applicant.skills = request.form.get("skills")
         applicant.experience = request.form.get("experience")
         db.session.commit()
-        flash(f"✅ Applicant '{applicant.fullname}' profile updated!", "success")
+        flash(f"Applicant '{applicant.fullname}' profile updated!", "success")
         return redirect(url_for("admin_dashboard"))
     return render_template("edit_applicant.html", applicant=applicant)
 
@@ -1054,7 +1471,7 @@ def edit_employer(employer_id):
         employer.email = request.form.get("email")
         employer.company = request.form.get("company")
         db.session.commit()
-        flash(f"✅ Employer '{employer.fullname}' profile updated!", "success")
+        flash(f"Employer '{employer.fullname}' profile updated!", "success")
         return redirect(url_for("admin_dashboard"))
 
     return render_template("edit_employer.html", employer=employer)
@@ -1072,9 +1489,37 @@ def edit_profile():
         return redirect(url_for('applicant_dashboard'))
 
     if request.method == 'POST':
-        applicant.fullname = request.form.get('fullname')
-        applicant.skills = request.form.get('skills')
-        applicant.experience = request.form.get('experience')
+        applicant.fullname = request.form.get('name') or request.form.get('fullname') or applicant.fullname
+        applicant.email = request.form.get('email') or applicant.email
+        applicant.skills = request.form.get('skills') or applicant.skills
+        applicant.experience = request.form.get('experience') or applicant.experience
+        
+        # Handle photo upload
+        if 'photo' in request.files:
+            photo_file = request.files['photo']
+            if photo_file and photo_file.filename != '':
+                # Check if it's an image file
+                allowed_image_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+                file_ext = photo_file.filename.rsplit('.', 1)[1].lower() if '.' in photo_file.filename else ''
+                
+                if file_ext in allowed_image_extensions:
+                    # Generate unique filename
+                    filename = secure_filename(photo_file.filename)
+                    unique_filename = f"{applicant_id}_photo_{datetime.now().strftime('%Y%m%d%H%M%S')}.{file_ext}"
+                    
+                    # Save file
+                    upload_dir = app.config['UPLOAD_FOLDER']
+                    if not os.path.exists(upload_dir):
+                        os.makedirs(upload_dir)
+                    
+                    filepath = os.path.join(upload_dir, unique_filename)
+                    photo_file.save(filepath)
+                    
+                    # Update applicant record
+                    applicant.photo_filename = unique_filename
+                else:
+                    flash("Invalid image format. Please upload PNG, JPG, JPEG, GIF, or WEBP.", "error")
+        
         db.session.commit()
         flash("Profile updated successfully!", "success")
         return redirect(url_for('applicant_dashboard'))

@@ -39,6 +39,47 @@
     .show-all-btn { background:#08106E; color:white; padding:10px 15px; border:none; border-radius:8px; font-weight:bold; margin-top:15px; cursor:pointer; }
     .show-all-btn:hover { background:#0c1c99; }
 
+    /* Toast Notification Styles */
+    .toast-container {
+        position: fixed;
+        bottom: 30px;
+        right: 30px;
+        z-index: 10000;
+        pointer-events: none;
+    }
+    .toast {
+        background: #08106E;
+        color: white;
+        padding: 14px 20px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        margin-bottom: 10px;
+        opacity: 0;
+        transform: translateX(120%);
+        transition: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+        min-width: 250px;
+        max-width: 400px;
+        font-weight: 500;
+        pointer-events: auto;
+    }
+    .toast.show {
+        opacity: 1;
+        transform: translateX(0);
+    }
+    .toast.success {
+        background: #28a745;
+    }
+    .toast.error {
+        background: #dc3545;
+    }
+    .toast.warning {
+        background: #ffc107;
+        color: #000;
+    }
+    .toast.info {
+        background: #17a2b8;
+    }
+
 .status-badge {
     padding: 0.2rem 0.5rem;
     border-radius: 0.25rem;
@@ -125,6 +166,8 @@
   </style>
 </head>
 <body>
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
   <div class="navbar">
     <div class="logo">SmartHire Employer</div>
     <div class="navbar-right">
@@ -135,7 +178,7 @@
         <a href="#uploaded-resume">Uploaded Resume</a>
         <a href="#resume-screening">Resume Screening</a>
       </div>
-      <form action="/" method="GET"><button class="logout-btn">Logout</button></form>
+      <form action="/" method="GET"><button class="logout-btn" onclick="showToast('Logging out...', 'info', 2000)">Logout</button></form>
     </div>
   </div>
 
@@ -166,7 +209,7 @@
           <div id="details-content">
             <p>Select a section above to view detailed records.</p>
           </div>
-          <button class="show-all-btn" onclick="showDetails('all')">Show All Records</button>
+          <button class="show-all-btn" onclick="showDetails('all'); showToast('Loading all records...', 'info', 1500)">Show All Records</button>
         </div>
       </div>
     </div>
@@ -189,7 +232,7 @@
 <!-- Job Posting -->
 <div class="card" id="job-posting">
   <h2>💼 Job Posting</h2>
-  <a href="{{ url_for('add_job_page') }}" class="download-btn">Add Job</a>
+  <a href="{{ url_for('add_job_page') }}" class="download-btn" onclick="showToast('Opening add job form...', 'info', 1500)">Add Job</a>
 
   <table>
     <thead>
@@ -220,10 +263,10 @@
         <td>{{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
         <td>
           <form action="{{ url_for('edit_job', job_id=job.id) }}" method="GET" style="display:inline;">
-            <button type="submit" class="download-btn">Edit</button>
+            <button type="submit" class="download-btn" onclick="showToast('Opening edit form...', 'info', 1500)">Edit</button>
           </form>
           <form action="{{ url_for('delete_job', job_id=job.id) }}" method="POST" style="display:inline;">
-            <button type="submit" class="archive-btn">Archive</button>
+            <button type="submit" class="archive-btn" onclick="showToast('Archiving job...', 'warning', 2000)">Archive</button>
           </form>
         </td>
       </tr>
@@ -234,7 +277,8 @@
 
 <!-- Uploaded Resume -->
 <div class="card" id="uploaded-resume">
-    <h2>📂 Uploaded Resume</h2>
+    <h2>📂 Resume Database (Resume Table)</h2>
+    <p style="color: #6b7aa8; margin-bottom: 15px;">💾 <strong>Resume Table:</strong> All resumes uploaded by applicants are stored here. Employers can select these resumes for screening and job matching.</p>
     <table>
         <thead>
             <tr>
@@ -251,10 +295,10 @@
                 <td>{{ resume.owner_name | default('N/A') }}</td>
                 <td>{{ resume.filename }}</td>
                 <td>
-                    <a href="{{ url_for('download_resume', filename=resume.filename) }}" class="download-btn" target="_blank">Download</a>
+                    <a href="{{ url_for('download_resume', filename=resume.filename) }}" class="download-btn" target="_blank" onclick="showToast('Downloading resume...', 'info', 2000)">Download</a>
                     
                     <form action="{{ url_for('delete_resume', resume_id=resume.id) }}" method="POST" style="display:inline; margin-left: 10px;">
-                        <button type="submit" class="archive-btn">Archive</button>
+                        <button type="submit" class="archive-btn" onclick="showToast('Archiving resume...', 'warning', 2000)">Archive</button>
                     </form>
                 </td>
             </tr>
@@ -266,71 +310,142 @@
 
     <!-- Resume Screening -->
 <div class="card" id="resume-screening">
-    <h2>📝 Resume Screening</h2>
+    <h2>📝 Resume Screening & Job Matching</h2>
 
-<p>Upload a PDF resume and paste the required job description to see an instant match score.</p>
+<p><strong>💾 Database Flow:</strong> Select a resume from the <strong>Resume table</strong> below, or upload a new one. All screening details will be saved to the <strong>Screening table</strong> for job matching.</p>
 
-<form action="{{ url_for('upload_screening') }}" method="POST" enctype="multipart/form-data" class="screening-form">
+<!-- Select Resume from Database -->
+<div style="margin-bottom: 25px; padding: 20px; background: #f8fbff; border: 1px solid #c7d8f9; border-radius: 12px;">
+    <h3 style="margin-top: 0; color: #08106E;">📂 Select Resume from Database (Resume Table)</h3>
+    <p style="color: #6b7aa8; margin-bottom: 15px;">Choose an existing resume from the Resume table to screen against your jobs:</p>
     
+    <form action="{{ url_for('screen_existing_resume') }}" method="POST" id="selectResumeForm" style="margin-bottom: 15px;">
+        <div style="display: grid; grid-template-columns: 2fr 2fr 1fr; gap: 12px; align-items: end;">
+            <div>
+                <label for="existing_resume_id" class="form-label" style="margin-bottom: 8px;">Select Resume:</label>
+                <select name="resume_id" id="existing_resume_id" class="form-select" required>
+                    <option value="">-- Choose a resume from Resume table --</option>
+                    {% for resume in resumes %}
+                        {% if not resume.filename.startswith('screen_') %}
+                        <option value="{{ resume.id }}" data-owner="{{ resume.owner_name }}" data-filename="{{ resume.filename }}">
+                            {{ resume.owner_name }} - {{ resume.filename }} (Uploaded: {{ resume.uploaded_at.strftime('%Y-%m-%d') if resume.uploaded_at else 'N/A' }})
+                        </option>
+                        {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="existing_job_id" class="form-label" style="margin-bottom: 8px;">Select Job to Match:</label>
+                <select name="job_id" id="existing_job_id" class="form-select" required>
+                    <option value="">-- Select a job to match against --</option>
+                    {% for job in jobs %}
+                        <option value="{{ job.id }}">{{ job.title }} - {{ job.company }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <button type="submit" class="screen-btn" style="width: 100%;" onclick="showToast('Screening resume...', 'info', 2000)">🔍 Screen Resume</button>
+            </div>
+        </div>
+    </form>
+    
+    <p style="color: #6b7aa8; font-size: 13px; margin: 0;">
+        💡 <strong>Tip:</strong> Resumes in the Resume table come from applicant uploads. Select one to screen it against your job posts.
+    </p>
+</div>
+
+<p style="margin-top: 20px;"><strong>Or upload a new resume:</strong> Upload a PDF resume and match it against one of your posted jobs. The system will automatically use the job description for matching when you select a job.</p>
+
+<form action="{{ url_for('upload_screening') }}" method="POST" enctype="multipart/form-data" class="screening-form" id="screeningForm">
+    
+    <div class="form-group-section">
+        <label for="job_id" class="form-label">🎯 Select Job to Match Against (Recommended):</label>
+        <select name="job_id" id="job_id" class="form-select">
+            <option value="">-- Select a Job Post (Auto-fills description below) --</option>
+            {% for job in jobs %}
+                <option value="{{ job.id }}" data-description="{{ job.description }}" data-title="{{ job.title }}" data-location="{{ job.location or '' }}" data-job-type="{{ job.job_type or '' }}">
+                    {{ job.title }} - {{ job.company }} (ID: {{ job.id }})
+                </option>
+            {% endfor %}
+        </select>
+        <small style="color: #6b7aa8; display: block; margin-top: 5px;">💡 Tip: Selecting a job will automatically populate the job description below.</small>
+    </div>
+
     <div class="form-group-section">
         <label for="resume_file" class="form-label">Upload Resume (PDF only):</label>
         <input type="file" name="resume_file" id="resume_file" accept=".pdf" required class="form-input-file">
     </div>
 
     <div class="form-group-section">
-        <label for="job_description" class="form-label">Paste Job Description:</label>
-        <textarea name="job_description" id="job_description" rows="6" required placeholder="Paste the job requirements and description here. This will be used for skill matching." class="form-textarea"></textarea>
-    </div>
-    
-    <div class="form-group-section">
-        <label for="job_id" class="form-label">Optional: Link to Job Post</label>
-        <select name="job_id" id="job_id" class="form-select">
-            <option value="">-- Select an Existing Job Post (Optional) --</option>
-            {% for job in jobs %}
-                <option value="{{ job.id }}">{{ job.title }} (ID: {{ job.id }})</option>
-            {% endfor %}
-        </select>
+        <label for="job_description" class="form-label">Job Description (Auto-filled when job is selected):</label>
+        <textarea name="job_description" id="job_description" rows="8" placeholder="Select a job above to auto-fill, or manually paste the job requirements and description here for skill matching." class="form-textarea"></textarea>
+        <small style="color: #6b7aa8; display: block; margin-top: 5px;">This field will be automatically filled when you select a job above. You can also edit it manually if needed.</small>
     </div>
 
-    <button type="submit" class="screen-btn">
-        Screen Resume
+    <button type="submit" class="screen-btn" onclick="showToast('Screening resume...', 'info', 2000)">
+        🚀 Screen Resume
     </button>
 </form>
 {% if screenings %}
-        <h4 style="margin-top:40px;">✅ Already Screened Resumes (Total: {{ screenings|length }})</h4>
-        <table style="width:100%;"> 
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Applicant Name</th>
-                    <th>Email</th>
-                    <th>Matched Skills</th> 
-                    <th>Score</th>
-                    <th>Screened Date</th>
-                    <th style="text-align: center;">Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for s in screenings %}
-                <tr>
-                    <td>{{ s.id }}</td>
-                    <td>{{ s.applicant_name | default('N/A') }}</td>
-                    <td>{{ s.applicant_email | default('N/A') }}</td>
-                    <td>{{ s.matched_skills | default('N/A') | truncate(40) }}</td>
-                    <td>{{ s.match_score | round(2) }}%</td>
-                    <td>{{ s.screened_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                    <td style="text-align: center;">
-                        <form action="{{ url_for('delete_screening', screening_id=s.id) }}" method="POST" style="display:inline;">
-                            <button type="submit" class="archive-btn">Archive</button>
-                        </form>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    {% else %}
-        <p style="margin-top:15px;">No resumes have been screened yet. Use the form above to begin!</p>
-    {% endif %}
+        <h4 style="margin-top:40px;">✅ Screening History - All Details Saved in Screening Table (Total: {{ screenings|length }})</h4>
+        <p style="color: #6b7aa8; font-size: 13px; margin-bottom: 15px;">
+            💾 <strong>Screening Table:</strong> All screening details are stored here including applicant info, job description, matched skills, match score, and resume summary.
+        </p>
+        <table style="width:100%;"> 
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Applicant Details</th>
+                    <th>Matched Job</th>
+                    <th>Matched Skills</th> 
+                    <th>Match Score</th>
+                    <th>Screened Date</th>
+                    <th style="text-align: center;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in screenings %}
+                <tr>
+                    <td><strong>#{{ s.id }}</strong></td>
+                    <td>
+                        <strong>{{ s.applicant_name | default('N/A') }}</strong><br>
+                        <small style="color: #6b7aa8;">📧 {{ s.applicant_email | default('N/A') }}</small><br>
+                        <small style="color: #6b7aa8;">📞 {{ s.applicant_phone | default('N/A') }}</small>
+                    </td>
+                    <td>
+                        {% if s.job %}
+                            <strong>{{ s.job.title }}</strong><br>
+                            <small style="color: #6b7aa8;">{{ s.job.company }}</small>
+                        {% else %}
+                            <span style="color: #6b7aa8; font-style: italic;">General Screening</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <span title="{{ s.matched_skills | default('N/A') }}">
+                            {{ s.matched_skills | default('N/A') | truncate(50) }}
+                        </span>
+                    </td>
+                    <td>
+                        <strong style="color: {% if s.match_score >= 80 %}#0c9a3e{% elif s.match_score >= 60 %}#e6a700{% else %}#d9534f{% endif %}; font-size: 16px;">
+                            {{ s.match_score | round(2) }}%
+                        </strong>
+                    </td>
+                    <td>{{ s.screened_at.strftime('%Y-%m-%d<br>%H:%M') | safe }}</td>
+                    <td style="text-align: center;">
+                        <form action="{{ url_for('delete_screening', screening_id=s.id) }}" method="POST" style="display:inline;">
+                            <button type="submit" class="archive-btn" onclick="showToast('Archiving screening...', 'warning', 2000)">Archive</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <p style="margin-top:15px; color: #6b7aa8; font-size: 13px;">
+            💾 <strong>All screening details are saved in the database:</strong> Applicant info, job description, matched skills, match score, resume summary, and timestamp.
+        </p>
+    {% else %}
+        <p style="margin-top:15px;">No resumes have been screened yet. Use the form above to begin! All screening details will be saved to the database.</p>
+    {% endif %}
 </div>
 
 <footer class="footer">© 2025 SmartHire. All rights reserved.</footer>
@@ -430,6 +545,68 @@
         }
         
         document.getElementById("details-content").innerHTML = content;
+    }
+
+    // Auto-populate job description when a job is selected
+    document.addEventListener('DOMContentLoaded', function() {
+        const jobSelect = document.getElementById('job_id');
+        const jobDescriptionTextarea = document.getElementById('job_description');
+        
+        if (jobSelect && jobDescriptionTextarea) {
+            jobSelect.addEventListener('change', function() {
+                const selectedOption = this.options[this.selectedIndex];
+                
+                if (selectedOption.value) {
+                    // Get job details from data attributes
+                    const jobTitle = selectedOption.getAttribute('data-title') || '';
+                    const jobDescription = selectedOption.getAttribute('data-description') || '';
+                    const jobLocation = selectedOption.getAttribute('data-location') || '';
+                    const jobType = selectedOption.getAttribute('data-job-type') || '';
+                    
+                    // Build the job description text
+                    let descriptionText = jobTitle;
+                    if (jobDescription) {
+                        descriptionText += '\n\n' + jobDescription;
+                    }
+                    if (jobLocation) {
+                        descriptionText += '\n\nLocation: ' + jobLocation;
+                    }
+                    if (jobType) {
+                        descriptionText += '\n\nJob Type: ' + jobType;
+                    }
+                    
+                    // Populate the textarea
+                    jobDescriptionTextarea.value = descriptionText;
+                    
+                    // Visual feedback
+                    jobDescriptionTextarea.style.borderColor = '#08106E';
+                    setTimeout(() => {
+                        jobDescriptionTextarea.style.borderColor = '#95BEF5';
+                    }, 2000);
+                } else {
+                    // Clear the textarea if no job is selected
+                    jobDescriptionTextarea.value = '';
+                }
+            });
+        }
+    });
+
+    // Toast Notification Function
+    function showToast(message, type = 'default', duration = 3000) {
+        const container = document.getElementById('toastContainer');
+        if (!container) return;
+
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+        container.appendChild(toast);
+
+        setTimeout(() => toast.classList.add('show'), 10);
+
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => container.removeChild(toast), 400);
+        }, duration);
     }
 </script>
 </body>
